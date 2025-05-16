@@ -94,13 +94,41 @@ const OnlineGame = () => {
     });
   };
 
-  const handleSquareClick = (i) => {
-    if (!gameState || !playerInfo) return;
+  const handleSquareClick = async (i) => {
+    if (!gameState || !playerInfo || !gameState.game) return;
 
-    const { board, currentTurn, winner } = gameState.game;
+    // Use the already destructured board variable instead of checking gameState.game directly
+    if (!board || !Array.isArray(board) || board.length !== 9) {
+      console.log("Board missing or invalid, initializing...");
+      const newBoard = Array(9).fill(null);
+
+      // Update Firebase with the missing board
+      const gameRef = ref(database, `rooms/${roomId}/game`);
+      try {
+        await update(gameRef, {
+          board: newBoard,
+          currentTurn: currentTurn || "X",
+          winner: winner || null,
+          winningLine: null,
+          scores: scores || { X: 0, O: 0 },
+        });
+        console.log("Board initialized successfully");
+      } catch (error) {
+        console.error("Error initializing board:", error);
+      }
+      return; // Return early and let Firebase sync trigger re-render
+    }
 
     // Check if it's not the player's turn or if the game is over
-    if (playerInfo.symbol !== currentTurn || winner || board[i]) return;
+    if (playerInfo.symbol !== currentTurn || winner || board[i]) {
+      console.log("Cannot make move:", {
+        playerSymbol: playerInfo.symbol,
+        currentTurn,
+        winner,
+        squareValue: board[i],
+      });
+      return;
+    }
 
     // Create a new board with the player's move
     const newBoard = [...board];
@@ -109,10 +137,19 @@ const OnlineGame = () => {
     // Calculate if there's a winner
     const result = calculateWinner(newBoard);
 
+    // CRITICAL FIX: Ensure Firebase stores arrays properly by using string indexes
+    // Convert array to object with numbered string keys to avoid Firebase auto-conversion
+    const boardObject = {};
+    newBoard.forEach((value, index) => {
+      if (value !== null) {
+        boardObject[index.toString()] = value;
+      }
+    });
+
     // Update the game state in Firebase
     const gameRef = ref(database, `rooms/${roomId}/game`);
     update(gameRef, {
-      board: newBoard,
+      board: boardObject, // Store as object to prevent Firebase conversion issues
       currentTurn: currentTurn === "X" ? "O" : "X",
       winner: result.winner,
       winningLine: result.line,
@@ -127,8 +164,10 @@ const OnlineGame = () => {
   const handleResetGame = () => {
     // Reset the game board but keep scores
     const gameRef = ref(database, `rooms/${roomId}/game`);
+
+    // Use an empty object for the board to represent all null values
     update(gameRef, {
-      board: Array(9).fill(null),
+      board: {}, // Empty object represents all null values
       currentTurn: "X",
       winner: null,
       winningLine: null,
@@ -201,11 +240,42 @@ const OnlineGame = () => {
     return null;
   }
 
-  // Extract game state data - FIX: Use proper default value for board
-  const { board = Array(9).fill(null), currentTurn, winner, winningLine, scores = { X: 0, O: 0 } } = gameState.game || {};
+  // Extract and normalize game state data
+  let { board = Array(9).fill(null), currentTurn, winner, winningLine, scores = { X: 0, O: 0 } } = gameState.game || {};
+
+  // CRITICAL FIX: Firebase converts sparse arrays to objects
+  // Convert board object back to array if needed
+  if (board && typeof board === "object" && !Array.isArray(board)) {
+    console.log("🔧 Converting board object to array");
+    const arrayBoard = Array(9).fill(null);
+    Object.keys(board).forEach((key) => {
+      const index = parseInt(key);
+      if (index >= 0 && index < 9) {
+        arrayBoard[index] = board[key];
+      }
+    });
+    board = arrayBoard;
+    console.log("🔧 Converted board:", board);
+  }
+
   const opponent = playerInfo.symbol === "X" ? "O" : "X";
   const opponentPlayer = gameState.players && gameState.players[opponent];
   const isMyTurn = currentTurn === playerInfo.symbol;
+
+  // Check if board needs to be initialized in Firebase
+  if (gameState.game && (!gameState.game.board || Object.keys(gameState.game.board || {}).length === 0)) {
+    console.log("Board missing in Firebase, initializing...");
+    const gameRef = ref(database, `rooms/${roomId}/game`);
+    update(gameRef, {
+      board: Array(9).fill(null),
+      currentTurn: currentTurn || "X",
+      winner: winner || null,
+      winningLine: null,
+      scores: scores,
+    }).catch((error) => {
+      console.error("Error initializing board in Firebase:", error);
+    });
+  }
 
   // FIX: Add proper validation for board length and draw detection
   const isValidBoard = board && Array.isArray(board) && board.length === 9;
